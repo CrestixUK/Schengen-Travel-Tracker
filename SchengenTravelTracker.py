@@ -13,24 +13,39 @@ https://github.com/CrestixUK/Schengen-Travel-Tracker
 ──────────────────────────────────────────────────
 Changelog
 ──────────────────────────────────────────────────
-v2026.06.01-1
-  - Initial release
-  - Two-person Schengen 90/180-day tracking
-  - Planned trip analysis with breach and at-limit warnings
-  - Projected peak accounting for ongoing and planned trips
-  - Next available entry date with consecutive days count
-  - Available days hint when adding a trip (forward-scan,
-    accounts for old trips dropping off the rolling window)
-  - Transit day support (shared boundary day counts once)
-  - Overlap validation (true overlaps blocked, transit allowed)
-  - Older trips hidden by default behind toggle
-  - Dark mode via system preference
-  - Fully offline, no external dependencies
-  - Data stored in plain JSON file alongside the script
+v1.1.0  (2026-06-02)  builds 1002-1007
+  [1007] - Switched to semver + build number versioning
+  [1006] - Person name always shown above their trip list
+  [1005] - Travelling selector in add form uses person colour + tick/cross
+  [1005] - Top tab bar: tick/cross removed, colour dot retained
+  [1004] - Per-person colour assignment (stored in data file)
+  [1004] - People selector shows colour dot per person
+  [1004] - Rename bar includes colour swatch picker (8 colours)
+  [1003] - Planned trips sort toggle (nearest/furthest first)
+  [1003] - Sort preference persisted to data file under settings
+  [1002] - Footer version driven from VERSION constant
+  [1002] - Changelog added to script header
+
+v1.0.0  (2026-06-01)  build 1001
+  [1001] - Initial release
+  [1001] - Two-person Schengen 90/180-day tracking
+  [1001] - Planned trip analysis with breach and at-limit warnings
+  [1001] - Projected peak accounting for ongoing and planned trips
+  [1001] - Next available entry date with consecutive days count
+  [1001] - Available days hint when adding a trip (forward-scan,
+            accounts for old trips dropping off the rolling window)
+  [1001] - Transit day support (shared boundary day counts once)
+  [1001] - Overlap validation (true overlaps blocked, transit allowed)
+  [1001] - Older trips hidden by default behind toggle
+  [1001] - Dark mode via system preference
+  [1001] - Fully offline, no external dependencies
+  [1001] - Data stored in plain JSON file alongside the script
 ──────────────────────────────────────────────────
 """
 
-VERSION = "v2026.06.01-1"
+SEMVER = "v1.1.0"
+BUILD  = 1007
+VERSION = f"{SEMVER}+{BUILD}"
 
 import copy
 import json
@@ -45,8 +60,11 @@ DATA_FILE = Path(__file__).parent / "SchengenTravelTracker_data.json"
 
 DEFAULT_DATA = {
     "people": {
-        "p1": {"name": "Person 1", "trips": []},
-        "p2": {"name": "Person 2", "trips": []},
+        "p1": {"name": "Person 1", "color": "#3b82f6", "trips": []},
+        "p2": {"name": "Person 2", "color": "#f97316", "trips": []},
+    },
+    "settings": {
+        "plannedSortAsc": True
     }
 }
 
@@ -55,7 +73,15 @@ def load_data():
     if DATA_FILE.exists():
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            if "settings" not in data:
+                data["settings"] = copy.deepcopy(DEFAULT_DATA["settings"])
+            # Assign default colors to people if missing
+            default_colors = ["#3b82f6", "#f97316", "#22c55e", "#a855f7"]
+            for i, pid in enumerate(data.get("people", {})):
+                if "color" not in data["people"][pid]:
+                    data["people"][pid]["color"] = default_colors[i % len(default_colors)]
+            return data
         except Exception:
             pass
     return copy.deepcopy(DEFAULT_DATA)
@@ -253,6 +279,7 @@ function analysePlan(trip,base){
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────
+const SWATCHES=['#3b82f6','#f97316','#22c55e','#a855f7','#ec4899','#14b8a6','#ef4444','#eab308'];
 const CTRY=['Austria','Belgium','Croatia','Czech Republic','Denmark','Estonia',
   'Finland','France','Germany','Greece','Hungary','Iceland','Italy','Latvia',
   'Liechtenstein','Lithuania','Luxembourg','Malta','Netherlands','Norway',
@@ -264,6 +291,7 @@ let S={
   view:'both',       // 'both' | 'p1' | 'p2'
   editName:null,     // 'p1' | 'p2' | null
   nameInput:'',
+  colorInput:'',
   showForm:false,    // showing the add-trip form
   editKey:null,      // {pid,tripId} when editing an existing trip
   form:{country:'',s:'',e:'',persons:['p1','p2']},
@@ -289,12 +317,13 @@ function set(patch){Object.assign(S,patch);render();}
 function setView(v){set({view:v,showForm:false,editKey:null,editName:null});}
 
 function startEditName(pid){
-  set({editName:pid,nameInput:S.data.people[pid].name,showForm:false,editKey:null});
+  set({editName:pid,nameInput:S.data.people[pid].name,colorInput:S.data.people[pid].color,showForm:false,editKey:null});
 }
 function cancelEditName(){set({editName:null});}
 function saveName(){
   if(!S.nameInput.trim())return;
   S.data.people[S.editName].name=S.nameInput.trim();
+  if(S.colorInput)S.data.people[S.editName].color=S.colorInput;
   apiSave();
   set({editName:null});
 }
@@ -372,6 +401,11 @@ function togglePerson(pid){
 }
 
 function toggleOldTrips(pid){set({showOld:Object.assign({},S.showOld,{[pid]:!S.showOld[pid]})});}
+function togglePlannedSort(){
+  S.data.settings.plannedSortAsc=!S.data.settings.plannedSortAsc;
+  apiSave();
+  render();
+}
 
 // ── DOM builder helpers ───────────────────────────────────────────────────
 function el(tag,props,kids){
@@ -499,12 +533,21 @@ function tripForm(mode){
   // Travelling toggle -- only shown when adding (editing modifies one person at a time)
   if(mode==='add'){
     const pRow=div({style:{display:'flex',gap:'8px',marginBottom:'14px'}});
-    ['p1','p2'].forEach(pid=>{
+    Object.keys(S.data.people).forEach(pid=>{
+      const p=S.data.people[pid];
       const sel=f.persons.includes(pid);
-      pRow.appendChild(el('button',{
-        class:sel?'btn-p':'',
-        style:{flex:'1',padding:'7px 0',fontSize:'13px',fontWeight:sel?'500':'400'},
-        onclick:()=>togglePerson(pid)},S.data.people[pid].name));
+      const btn=div({style:{flex:'1',padding:'7px 10px',fontSize:'13px',
+        cursor:'pointer',borderRadius:'var(--r)',border:'0.5px solid',
+        display:'flex',alignItems:'center',justifyContent:'center',gap:'7px',
+        fontWeight:sel?'500':'400',
+        background:sel?p.color:'transparent',
+        color:sel?'#fff':'var(--c3)',
+        borderColor:sel?p.color:'var(--br2)'},
+        onclick:()=>togglePerson(pid)});
+      btn.appendChild(el('span',{style:{fontSize:'12px',fontWeight:'700'}},
+        sel?'\u2713':'\u2717'));
+      btn.appendChild(document.createTextNode(p.name));
+      pRow.appendChild(btn);
     });
     formKids.push(
       el('label',{style:{fontSize:'12px',color:'var(--c2)',display:'block',marginBottom:'6px'}},'Travelling'),
@@ -624,7 +667,19 @@ function tripSection(pid){
   if(ongoing.length) ongoing.forEach(t=>wrap.appendChild(mkRow(t,'ongoing')));
 
   if(planned.length){
-    wrap.appendChild(div({class:'slabel'},'\u2192 Planned'));
+    const asc=S.data.settings.plannedSortAsc;
+    planned.sort((a,b)=>asc?a.s.localeCompare(b.s):b.s.localeCompare(a.s));
+    const sortHdr=div({style:{display:'flex',alignItems:'center',
+      justifyContent:'space-between',marginBottom:'6px',marginTop:'12px'}});
+    sortHdr.appendChild(div({class:'slabel',style:{margin:'0'}},'\u2192 Planned'));
+    const sortBtn=el('button',{
+      class:'btn-g btn-sm',
+      title:asc?'Showing nearest first \u2014 click to show furthest first'
+                :'Showing furthest first \u2014 click to show nearest first',
+      onclick:togglePlannedSort},
+      asc?'\u2191 Nearest first':'\u2193 Furthest first');
+    sortHdr.appendChild(sortBtn);
+    wrap.appendChild(sortHdr);
     planned.forEach(t=>wrap.appendChild(mkRow(t,'planned')));
   }
   const pastInWin=past.filter(t=>toDate(t.e)>=ws);
@@ -675,21 +730,40 @@ function render(){
   // Person tabs + rename buttons
   const tabBar=div({style:{display:'flex',alignItems:'center',gap:'6px',
     padding:'.75rem 1.25rem',borderBottom:'0.5px solid var(--br)'}});
-  [{id:'both',label:'Both'},{id:'p1',label:S.data.people.p1.name},
-   {id:'p2',label:S.data.people.p2.name}].forEach(opt=>{
-    const active=S.view===opt.id;
-    tabBar.appendChild(el('button',{
-      style:{padding:'4px 14px',borderRadius:'20px',fontSize:'13px',
-             fontWeight:active?'500':'400',border:'0.5px solid',
-             background:active?'var(--c)':'transparent',
-             color:active?'var(--bg)':'var(--c2)',
-             borderColor:active?'var(--c)':'var(--br2)'},
-      onclick:()=>setView(opt.id)},opt.label));
+  // Both button
+  const bothActive=S.view==='both';
+  tabBar.appendChild(el('button',{
+    style:{padding:'4px 14px',borderRadius:'20px',fontSize:'13px',
+           fontWeight:bothActive?'500':'400',border:'0.5px solid',
+           background:bothActive?'var(--c)':'transparent',
+           color:bothActive?'var(--bg)':'var(--c2)',
+           borderColor:bothActive?'var(--c)':'var(--br2)'},
+    onclick:()=>setView('both')},'Both'));
+  // Per-person buttons: colour dot + name, simple pill style
+  Object.keys(S.data.people).forEach(pid=>{
+    const p=S.data.people[pid];
+    const active=S.view===pid;
+    const btn=div({style:{display:'flex',alignItems:'center',gap:'6px',
+      padding:'4px 12px',borderRadius:'20px',fontSize:'13px',cursor:'pointer',
+      border:'0.5px solid',
+      background:active?'var(--c)':'transparent',
+      color:active?'var(--bg)':'var(--c2)',
+      borderColor:active?'var(--c)':'var(--br2)'},
+      onclick:()=>setView(pid)});
+    btn.appendChild(div({style:{width:'8px',height:'8px',borderRadius:'50%',
+      flexShrink:'0',background:p.color}}));
+    btn.appendChild(document.createTextNode(p.name));
+    tabBar.appendChild(btn);
   });
   const nr=div({style:{marginLeft:'auto',display:'flex',gap:'4px'}});
-  ['p1','p2'].forEach(pid=>{
-    nr.appendChild(el('button',{class:'btn-g btn-sm',onclick:()=>startEditName(pid)},
-      '\u270E '+S.data.people[pid].name));
+  Object.keys(S.data.people).forEach(pid=>{
+    const dot=div({style:{width:'8px',height:'8px',borderRadius:'50%',
+      background:S.data.people[pid].color,flexShrink:'0',display:'inline-block'}});
+    const btn=el('button',{class:'btn-g btn-sm',
+      style:{display:'flex',alignItems:'center',gap:'5px'},
+      onclick:()=>startEditName(pid)},'\u270E '+S.data.people[pid].name);
+    btn.insertBefore(dot, btn.firstChild);
+    nr.appendChild(btn);
   });
   tabBar.appendChild(nr);
   app.appendChild(tabBar);
@@ -699,10 +773,21 @@ function render(){
     const bar=div({style:{display:'flex',alignItems:'center',gap:'10px',
       padding:'.75rem 1.25rem',background:'var(--bg2)',borderBottom:'0.5px solid var(--br)'}});
     bar.appendChild(el('span',{style:{fontSize:'13px',color:'var(--c2)'}},'Rename '+S.data.people[S.editName].name+':'));
-    const inp=el('input',{type:'text',value:S.nameInput,style:{maxWidth:'200px'},
+    const inp=el('input',{type:'text',value:S.nameInput,style:{maxWidth:'180px'},
       oninput:e=>S.nameInput=e.target.value,
       onkeydown:e=>{if(e.key==='Enter')saveName();if(e.key==='Escape')cancelEditName();}});
     bar.appendChild(inp);
+    // Colour swatches
+    SWATCHES.forEach(c=>{
+      const sel=c===S.colorInput;
+      const sw=div({style:{width:'20px',height:'20px',borderRadius:'50%',
+        background:c,cursor:'pointer',flexShrink:'0',
+        boxSizing:'border-box',
+        border:sel?'2px solid var(--c)':'2px solid transparent',
+        outline:sel?'1.5px solid var(--br2)':'none'},
+        onclick:()=>{S.colorInput=c;render();}});
+      bar.appendChild(sw);
+    });
     bar.appendChild(el('button',{onclick:saveName},'Save'));
     bar.appendChild(el('button',{onclick:cancelEditName},'Cancel'));
     app.appendChild(bar);
@@ -732,11 +817,14 @@ function render(){
 
   // Trip lists
   persons.forEach(pid=>{
-    if(persons.length>1){
-      body.appendChild(div({style:{fontSize:'11px',fontWeight:'500',color:'var(--c3)',
-        textTransform:'uppercase',letterSpacing:'.06em',marginBottom:'8px'}},
-        S.data.people[pid].name));
-    }
+    // Always show person name label, with colour dot
+    const pLabel=div({style:{fontSize:'11px',fontWeight:'500',color:'var(--c3)',
+      textTransform:'uppercase',letterSpacing:'.06em',marginBottom:'8px',
+      display:'flex',alignItems:'center',gap:'6px'}});
+    pLabel.appendChild(div({style:{width:'7px',height:'7px',borderRadius:'50%',
+      background:S.data.people[pid].color,flexShrink:'0'}}));
+    pLabel.appendChild(document.createTextNode(S.data.people[pid].name));
+    body.appendChild(pLabel);
     body.appendChild(tripSection(pid));
   });
 
